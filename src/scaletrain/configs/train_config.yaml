@@ -11,8 +11,9 @@ training:
   epochs: 3
   lr: 0.001
   weight_decay: 0.0
-  device: "auto"        # auto | cpu | cuda | mps
+  device: "auto"        # auto | cpu | cuda | mps (ignored in distributed mode)
   log_every_n_steps: 50
+  distributed: false    # set to true when launching with torchrun
 
 mlflow:
   tracking_uri: "sqlite:///mlflow.db"

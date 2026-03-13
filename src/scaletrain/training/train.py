@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+import torch.distributed as dist
 import typer
 import yaml
+from torch.utils.data.distributed import DistributedSampler
 
 from scaletrain.data.datamodule import MNISTDataConfig, MNISTDataModule
 from scaletrain.models.cnn import MNISTCNN
@@ -35,6 +38,19 @@ def _section(cfg: Dict[str, Any], key: str) -> Dict[str, Any]:
     return value
 
 
+def _init_distributed() -> tuple[int, int]:
+    """Initialize the default process group. Returns (rank, world_size)."""
+    rank = int(os.environ["RANK"])
+    world_size = int(os.environ["WORLD_SIZE"])
+    dist.init_process_group(backend="gloo")
+    return rank, world_size
+
+
+def _teardown_distributed() -> None:
+    if dist.is_initialized():
+        dist.destroy_process_group()
+
+
 @app.command()
 def main(
     config: Path = typer.Option(
@@ -48,23 +64,42 @@ def main(
         help="Path to training YAML config.",
     ),
 ) -> None:
-    print("CLI EXECUTING", flush=True)
-
     cfg = _load_yaml(config)
 
     data_cfg = MNISTDataConfig(**_section(cfg, "data"))
     train_cfg = TrainingConfig(**_section(cfg, "training"))
     mlflow_cfg = MLflowConfig(**_section(cfg, "mlflow"))
 
+    rank = 0
+    world_size = 1
+
+    if train_cfg.distributed:
+        rank, world_size = _init_distributed()
+
+    if rank == 0:
+        print("CLI EXECUTING", flush=True)
+
     dm = MNISTDataModule(data_cfg)
-    dm.prepare_data()
+
+    # In distributed mode only rank 0 downloads; barrier ensures all ranks wait.
+    if rank == 0:
+        dm.prepare_data()
+    if train_cfg.distributed:
+        dist.barrier()
     dm.setup()
 
     model = MNISTCNN()
 
+    sampler: Optional[DistributedSampler] = None
+    if train_cfg.distributed:
+        sampler = DistributedSampler(
+            dm.train_dataset, num_replicas=world_size, rank=rank, shuffle=True
+        )
+
+    # Logger and MLflow run are only created on rank 0.
     logger: Optional[MLflowLogger] = None
     tracking_cfg = _section(cfg, "tracking")
-    if bool(tracking_cfg.get("enabled", True)):
+    if rank == 0 and bool(tracking_cfg.get("enabled", True)):
         logger = MLflowLogger(mlflow_cfg)
 
     try:
@@ -77,23 +112,29 @@ def main(
                     "training.lr": train_cfg.lr,
                     "training.weight_decay": train_cfg.weight_decay,
                     "training.device": train_cfg.device,
+                    "training.distributed": train_cfg.distributed,
+                    "training.world_size": world_size,
                 }
             )
 
         trainer = Trainer(
             model=model,
-            train_loader=dm.train_dataloader(),
+            train_loader=dm.train_dataloader(sampler=sampler),
             val_loader=dm.val_dataloader(),
             cfg=train_cfg,
             logger=logger,
+            rank=rank,
         )
         trainer.fit()
 
+        # Log the unwrapped model; `model` retains the trained weights regardless of DDP wrapping.
         if logger:
             logger.log_model(model, artifact_path="model")
     finally:
         if logger:
             logger.end()
+        if train_cfg.distributed:
+            _teardown_distributed()
 
 
 if __name__ == "__main__":

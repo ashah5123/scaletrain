@@ -17,6 +17,7 @@ class TrainingConfig:
     weight_decay: float = 0.0
     device: str = "auto"  # "auto" | "cpu" | "cuda" | "mps"
     log_every_n_steps: int = 50
+    distributed: bool = False
 
 
 class Trainer:
@@ -27,15 +28,21 @@ class Trainer:
         val_loader: DataLoader,
         cfg: TrainingConfig,
         logger: Optional[MLflowLogger] = None,
+        rank: int = 0,
     ) -> None:
+        self.rank = rank
         self.model = model
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.cfg = cfg
         self.logger = logger
 
-        self.device = self._select_device(cfg.device)
+        # gloo on macOS does not support MPS; distributed mode always uses CPU.
+        self.device = torch.device("cpu") if cfg.distributed else self._select_device(cfg.device)
         self.model.to(self.device)
+
+        if cfg.distributed:
+            self.model = torch.nn.parallel.DistributedDataParallel(self.model)
 
         self.criterion = nn.CrossEntropyLoss()
         self.optimizer = torch.optim.Adam(
@@ -50,15 +57,16 @@ class Trainer:
             train_loss, _train_acc, global_step = self._train_epoch(epoch, global_step)
             val_loss, val_accuracy = self._eval_epoch()
 
-            print(
-                f"epoch {epoch}/{self.cfg.epochs}  "
-                f"train_loss={train_loss:.4f}  "
-                f"val_loss={val_loss:.4f}  "
-                f"val_acc={val_accuracy:.4f}",
-                flush=True,
-            )
+            if self.rank == 0:
+                print(
+                    f"epoch {epoch}/{self.cfg.epochs}  "
+                    f"train_loss={train_loss:.4f}  "
+                    f"val_loss={val_loss:.4f}  "
+                    f"val_acc={val_accuracy:.4f}",
+                    flush=True,
+                )
 
-            if self.logger:
+            if self.rank == 0 and self.logger:
                 self.logger.log_metric("train_loss", float(train_loss), step=epoch)
                 self.logger.log_metric("val_loss", float(val_loss), step=epoch)
                 self.logger.log_metric("val_accuracy", float(val_accuracy), step=epoch)
@@ -72,6 +80,11 @@ class Trainer:
         total_loss = 0.0
         correct = 0
         total = 0
+
+        # DistributedSampler requires set_epoch for proper shuffling each epoch.
+        sampler = self.train_loader.sampler
+        if hasattr(sampler, "set_epoch"):
+            sampler.set_epoch(epoch)
 
         for batch_idx, (x, y) in enumerate(self.train_loader, start=1):
             x = x.to(self.device, non_blocking=True)
@@ -90,7 +103,7 @@ class Trainer:
             correct += (logits.argmax(dim=1) == y).sum().item()
 
             global_step += 1
-            if self.logger and (global_step % self.cfg.log_every_n_steps == 0):
+            if self.rank == 0 and self.logger and (global_step % self.cfg.log_every_n_steps == 0):
                 self.logger.log_metrics(
                     {"train/loss_step": float(loss.item())},
                     step=global_step,
@@ -142,4 +155,3 @@ class Trainer:
         if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             return torch.device("mps")
         return torch.device("cpu")
-

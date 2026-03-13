@@ -13,8 +13,8 @@ env/
 mlruns/
 mlflow.db
 
-# Data
-data/
+# Data (MNIST downloads at project root only)
+/data/
 
 # macOS
 .DS_Store
