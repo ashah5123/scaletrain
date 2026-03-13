@@ -12,11 +12,7 @@ from scaletrain.tracking.mlflow_logger import MLflowConfig, MLflowLogger
 from scaletrain.training.trainer import Trainer, TrainingConfig
 
 
-app = typer.Typer(
-    add_completion=False,
-    help="ScaleTrain training CLI (single-process).",
-    no_args_is_help=False,
-)
+app = typer.Typer()
 
 
 def _default_config_path() -> Path:
@@ -39,8 +35,8 @@ def _section(cfg: Dict[str, Any], key: str) -> Dict[str, Any]:
     return value
 
 
-@app.callback(invoke_without_command=True)
-def run(
+@app.command()
+def main(
     config: Path = typer.Option(
         _default_config_path(),
         "--config",
@@ -52,8 +48,7 @@ def run(
         help="Path to training YAML config.",
     ),
 ) -> None:
-    print("=== CLI STARTED ===")
-    print("=== LOADING CONFIG ===")
+    print("CLI EXECUTING", flush=True)
 
     cfg = _load_yaml(config)
 
@@ -62,19 +57,15 @@ def run(
     mlflow_cfg = MLflowConfig(**_section(cfg, "mlflow"))
 
     dm = MNISTDataModule(data_cfg)
-    print("=== PREPARING DATA ===")
     dm.prepare_data()
-    print("=== SETTING UP DATA ===")
     dm.setup()
 
     model = MNISTCNN()
-    print("=== MODEL INITIALIZED ===")
 
     logger: Optional[MLflowLogger] = None
     tracking_cfg = _section(cfg, "tracking")
     if bool(tracking_cfg.get("enabled", True)):
         logger = MLflowLogger(mlflow_cfg)
-    print("=== LOGGER INITIALIZED ===")
 
     try:
         if logger:
@@ -96,9 +87,7 @@ def run(
             cfg=train_cfg,
             logger=logger,
         )
-        print("=== STARTING TRAINING ===")
         trainer.fit()
-        print("=== TRAINING FINISHED ===")
 
         if logger:
             logger.log_model(model, artifact_path="model")

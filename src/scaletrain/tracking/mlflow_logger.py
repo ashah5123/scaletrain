@@ -31,6 +31,11 @@ class MLflowLogger:
         if params:
             mlflow.log_params({k: self._stringify(v) for k, v in params.items()})
 
+    def log_metric(self, key: str, value: float, step: Optional[int] = None) -> None:
+        if not self._active:
+            return
+        mlflow.log_metric(key, float(value), step=step)
+
     def log_metrics(self, metrics: Mapping[str, float], step: Optional[int] = None) -> None:
         if not self._active:
             return

@@ -47,17 +47,21 @@ class Trainer:
     def fit(self) -> None:
         global_step = 0
         for epoch in range(1, self.cfg.epochs + 1):
-            train_loss, train_acc, global_step = self._train_epoch(epoch, global_step)
-            val_loss, val_acc = self._eval_epoch()
+            train_loss, _train_acc, global_step = self._train_epoch(epoch, global_step)
+            val_loss, val_accuracy = self._eval_epoch()
 
-            metrics = {
-                "train/loss": train_loss,
-                "train/accuracy": train_acc,
-                "val/loss": val_loss,
-                "val/accuracy": val_acc,
-            }
+            print(
+                f"epoch {epoch}/{self.cfg.epochs}  "
+                f"train_loss={train_loss:.4f}  "
+                f"val_loss={val_loss:.4f}  "
+                f"val_acc={val_accuracy:.4f}",
+                flush=True,
+            )
+
             if self.logger:
-                self.logger.log_metrics(metrics, step=epoch)
+                self.logger.log_metric("train_loss", float(train_loss), step=epoch)
+                self.logger.log_metric("val_loss", float(val_loss), step=epoch)
+                self.logger.log_metric("val_accuracy", float(val_accuracy), step=epoch)
 
     @torch.no_grad()
     def evaluate(self) -> Tuple[float, float]:
