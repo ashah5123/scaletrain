@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from contextlib import asynccontextmanager
-from typing import List
+from typing import List, Optional
 
 import mlflow
 import mlflow.pytorch
@@ -38,7 +38,8 @@ class PredictResponse(BaseModel):
 # Model loading
 # ---------------------------------------------------------------------------
 
-def _load_latest_model(tracking_uri: str, experiment_name: str) -> torch.nn.Module:
+def _latest_run_uri(tracking_uri: str, experiment_name: str) -> str:
+    """Return the artifact URI for the most recent finished run."""
     mlflow.set_tracking_uri(tracking_uri)
     client = mlflow.tracking.MlflowClient()
 
@@ -61,8 +62,31 @@ def _load_latest_model(tracking_uri: str, experiment_name: str) -> torch.nn.Modu
             "Complete a training run before starting the inference server."
         )
 
-    run_id = runs[0].info.run_id
-    model_uri = f"runs:/{run_id}/model"
+    return f"runs:/{runs[0].info.run_id}/model"
+
+
+def _resolve_model_uri(
+    tracking_uri: str,
+    experiment_name: str,
+    model_name: str,
+    version: Optional[str],
+    stage: Optional[str],
+) -> str:
+    """
+    Resolve the MLflow model URI according to loading priority:
+      1. Explicit version  →  models:/<name>/<version>
+      2. Stage alias       →  models:/<name>/<stage>
+      3. Fallback          →  latest finished run artifact
+    """
+    if version is not None:
+        return f"models:/{model_name}/{version}"
+    if stage is not None:
+        return f"models:/{model_name}/{stage}"
+    return _latest_run_uri(tracking_uri, experiment_name)
+
+
+def _load_model(tracking_uri: str, model_uri: str) -> torch.nn.Module:
+    mlflow.set_tracking_uri(tracking_uri)
     model = mlflow.pytorch.load_model(model_uri, map_location="cpu")
     model.eval()
     return model
@@ -74,11 +98,17 @@ def _load_latest_model(tracking_uri: str, experiment_name: str) -> torch.nn.Modu
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db")
+    tracking_uri  = os.environ.get("MLFLOW_TRACKING_URI",   "sqlite:///mlflow.db")
     experiment_name = os.environ.get("MLFLOW_EXPERIMENT_NAME", "scaletrain")
+    model_name    = os.environ.get("MLFLOW_MODEL_NAME",      experiment_name)
+    version       = os.environ.get("MODEL_VERSION")   # e.g. "3"
+    stage         = os.environ.get("MODEL_STAGE")     # e.g. "Production"
 
     try:
-        app.state.model = _load_latest_model(tracking_uri, experiment_name)
+        model_uri = _resolve_model_uri(tracking_uri, experiment_name, model_name, version, stage)
+        print(f"[scaletrain] loading model: {model_uri}", flush=True)
+        app.state.model = _load_model(tracking_uri, model_uri)
+        print(f"[scaletrain] model ready:   {model_uri}", flush=True)
     except RuntimeError as exc:
         raise RuntimeError(f"Startup failed: {exc}") from exc
 
