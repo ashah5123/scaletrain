@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import torch
 from torch import nn
@@ -22,6 +22,7 @@ class TrainingConfig:
     device: str = "auto"  # "auto" | "cpu" | "cuda" | "mps"
     log_every_n_steps: int = 50
     distributed: bool = False
+    benchmark: bool = False
 
 
 class Trainer:
@@ -55,6 +56,17 @@ class Trainer:
             weight_decay=self.cfg.weight_decay,
         )
 
+        # Populated by fit(); available to callers afterwards.
+        self._epoch_times: List[float] = []
+        self._throughputs: List[float] = []
+        self.total_training_time: float = 0.0
+
+    @property
+    def avg_throughput(self) -> float:
+        if not self._throughputs:
+            return 0.0
+        return sum(self._throughputs) / len(self._throughputs)
+
     def fit(self) -> None:
         global_step = 0
         t_run_start = time.perf_counter()
@@ -65,6 +77,9 @@ class Trainer:
             val_loss, val_accuracy = self._eval_epoch()
             epoch_time = time.perf_counter() - t_epoch_start
             samples_per_second = n_samples / max(epoch_time, 1e-9)
+
+            self._epoch_times.append(epoch_time)
+            self._throughputs.append(samples_per_second)
 
             if self.rank == 0:
                 log.info(
@@ -82,11 +97,11 @@ class Trainer:
                 self.logger.log_metric("epoch_time_seconds", epoch_time, step=epoch)
                 self.logger.log_metric("samples_per_second", samples_per_second, step=epoch)
 
-        total_training_time = time.perf_counter() - t_run_start
+        self.total_training_time = time.perf_counter() - t_run_start
         if self.rank == 0:
-            log.info("training complete  total_time=%.2fs", total_training_time)
+            log.info("training complete  total_time=%.2fs", self.total_training_time)
             if self.logger:
-                self.logger.log_metric("total_training_time", total_training_time)
+                self.logger.log_metric("total_training_time", self.total_training_time)
 
     @torch.no_grad()
     def evaluate(self) -> Tuple[float, float]:

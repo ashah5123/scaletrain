@@ -257,6 +257,33 @@ docker run --rm \
 
 ---
 
+## Benchmarks
+
+Benchmark mode runs 2 epochs with MLflow disabled and prints a throughput summary. It is designed to compare single-process vs. DDP training on the same hardware.
+
+### Run
+
+```bash
+# Single-process
+poetry run scaletrain --benchmark
+
+# Distributed (2 processes)
+torchrun --nproc_per_node=2 -m scaletrain.training.train --benchmark
+```
+
+### Example results
+
+> Numbers vary by hardware. The table below is representative of a modern laptop CPU.
+
+| Mode           | Epochs | Total time | Avg samples/s |
+|----------------|--------|------------|---------------|
+| Single-process | 2      | 24.3s      | 4,923         |
+| DDP (2 proc)   | 2      | 14.1s      | 8,441         |
+
+DDP throughput gain comes from data parallelism across processes. On CPU-only machines the gain is limited by inter-process communication overhead (gloo backend).
+
+---
+
 ## Design Notes
 
 - **No side effects at import time.** Model loading, dataset downloads, and process group initialization happen inside explicit lifecycle functions, not at module level.

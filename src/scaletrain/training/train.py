@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import os
@@ -19,6 +20,8 @@ from scaletrain.training.trainer import Trainer, TrainingConfig
 log = logging.getLogger(__name__)
 
 app = typer.Typer()
+
+_BENCHMARK_EPOCHS = 2
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +92,21 @@ def _teardown_distributed() -> None:
         dist.destroy_process_group()
 
 
+def _print_benchmark_summary(trainer: Trainer, world_size: int) -> None:
+    mode = f"DDP ({world_size} proc)" if world_size > 1 else "single-process"
+    sep = "─" * 46
+    print("", flush=True)
+    print(sep, flush=True)
+    print("  Benchmark Results", flush=True)
+    print(sep, flush=True)
+    print(f"  Mode            : {mode}", flush=True)
+    print(f"  Epochs          : {trainer.cfg.epochs}", flush=True)
+    print(f"  Total time      : {trainer.total_training_time:.2f}s", flush=True)
+    print(f"  Avg samples/s   : {trainer.avg_throughput:,.0f}", flush=True)
+    print(sep, flush=True)
+    print("", flush=True)
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -105,12 +123,22 @@ def main(
         readable=True,
         help="Path to training YAML config.",
     ),
+    benchmark: bool = typer.Option(
+        False,
+        "--benchmark",
+        is_flag=True,
+        help="Run in benchmark mode: 2 epochs, no MLflow logging, prints throughput summary.",
+    ),
 ) -> None:
     cfg = _load_yaml(config)
 
     data_cfg = MNISTDataConfig(**_section(cfg, "data"))
     train_cfg = TrainingConfig(**_section(cfg, "training"))
     mlflow_cfg = MLflowConfig(**_section(cfg, "mlflow"))
+
+    # --benchmark overrides config; forces a short fixed run with no side effects.
+    if benchmark:
+        train_cfg = dataclasses.replace(train_cfg, benchmark=True, epochs=_BENCHMARK_EPOCHS)
 
     rank = 0
     world_size = 1
@@ -119,7 +147,7 @@ def main(
         rank, world_size = _init_distributed()
 
     _setup_logging(rank)
-    log.info("training started")
+    log.info("training started  benchmark=%s", train_cfg.benchmark)
 
     dm = MNISTDataModule(data_cfg)
 
@@ -138,10 +166,10 @@ def main(
             dm.train_dataset, num_replicas=world_size, rank=rank, shuffle=True
         )
 
-    # Logger and MLflow run are only created on rank 0.
+    # Benchmark mode skips MLflow to measure raw training throughput.
     logger: Optional[MLflowLogger] = None
     tracking_cfg = _section(cfg, "tracking")
-    if rank == 0 and bool(tracking_cfg.get("enabled", True)):
+    if rank == 0 and bool(tracking_cfg.get("enabled", True)) and not train_cfg.benchmark:
         logger = MLflowLogger(mlflow_cfg)
 
     try:
@@ -168,6 +196,9 @@ def main(
             rank=rank,
         )
         trainer.fit()
+
+        if train_cfg.benchmark and rank == 0:
+            _print_benchmark_summary(trainer, world_size)
 
         # Log the unwrapped model; `model` retains the trained weights regardless of DDP wrapping.
         if logger:

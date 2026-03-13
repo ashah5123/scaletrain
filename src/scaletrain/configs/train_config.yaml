@@ -14,6 +14,7 @@ training:
   device: "auto"        # auto | cpu | cuda | mps (ignored in distributed mode)
   log_every_n_steps: 50
   distributed: false    # set to true when launching with torchrun
+  benchmark: false      # set to true (or pass --benchmark) to run throughput benchmark
 
 mlflow:
   tracking_uri: "sqlite:///mlflow.db"
