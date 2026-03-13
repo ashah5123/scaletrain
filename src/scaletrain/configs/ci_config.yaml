@@ -1,0 +1,21 @@
+tracking:
+  enabled: false
+
+data:
+  data_dir: "./data"
+  batch_size: 64
+  num_workers: 0
+  pin_memory: false
+
+training:
+  epochs: 1
+  lr: 0.001
+  weight_decay: 0.0
+  device: "cpu"
+  log_every_n_steps: 10
+  distributed: false
+
+mlflow:
+  tracking_uri: "sqlite:///mlflow.db"
+  experiment_name: "scaletrain-ci"
+  run_name: "ci-smoke"
