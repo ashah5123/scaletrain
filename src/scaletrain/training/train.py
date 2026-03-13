@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -14,9 +16,45 @@ from scaletrain.models.cnn import MNISTCNN
 from scaletrain.tracking.mlflow_logger import MLflowConfig, MLflowLogger
 from scaletrain.training.trainer import Trainer, TrainingConfig
 
+log = logging.getLogger(__name__)
 
 app = typer.Typer()
 
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
+class _JsonFormatter(logging.Formatter):
+    def __init__(self, rank: int = 0) -> None:
+        super().__init__()
+        self._rank = rank
+
+    def format(self, record: logging.LogRecord) -> str:
+        return json.dumps(
+            {
+                "timestamp": self.formatTime(record, datefmt="%Y-%m-%dT%H:%M:%S"),
+                "level": record.levelname,
+                "rank": self._rank,
+                "message": record.getMessage(),
+            }
+        )
+
+
+def _setup_logging(rank: int) -> None:
+    handler = logging.StreamHandler()
+    handler.setFormatter(_JsonFormatter(rank=rank))
+
+    root = logging.getLogger("scaletrain")
+    root.setLevel(logging.INFO if rank == 0 else logging.WARNING)
+    root.handlers.clear()
+    root.addHandler(handler)
+    root.propagate = False
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def _default_config_path() -> Path:
     # src/scaletrain/training/train.py -> src/scaletrain/configs/train_config.yaml
@@ -51,6 +89,10 @@ def _teardown_distributed() -> None:
         dist.destroy_process_group()
 
 
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
 @app.command()
 def main(
     config: Path = typer.Option(
@@ -76,8 +118,8 @@ def main(
     if train_cfg.distributed:
         rank, world_size = _init_distributed()
 
-    if rank == 0:
-        print("CLI EXECUTING", flush=True)
+    _setup_logging(rank)
+    log.info("training started")
 
     dm = MNISTDataModule(data_cfg)
 

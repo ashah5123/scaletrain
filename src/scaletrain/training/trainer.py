@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import time
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
@@ -8,6 +10,8 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from scaletrain.tracking.mlflow_logger import MLflowLogger
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -53,29 +57,42 @@ class Trainer:
 
     def fit(self) -> None:
         global_step = 0
+        t_run_start = time.perf_counter()
+
         for epoch in range(1, self.cfg.epochs + 1):
-            train_loss, _train_acc, global_step = self._train_epoch(epoch, global_step)
+            t_epoch_start = time.perf_counter()
+            train_loss, _train_acc, global_step, n_samples = self._train_epoch(epoch, global_step)
             val_loss, val_accuracy = self._eval_epoch()
+            epoch_time = time.perf_counter() - t_epoch_start
+            samples_per_second = n_samples / max(epoch_time, 1e-9)
 
             if self.rank == 0:
-                print(
-                    f"epoch {epoch}/{self.cfg.epochs}  "
-                    f"train_loss={train_loss:.4f}  "
-                    f"val_loss={val_loss:.4f}  "
-                    f"val_acc={val_accuracy:.4f}",
-                    flush=True,
+                log.info(
+                    "epoch %d/%d  train_loss=%.4f  val_loss=%.4f  val_acc=%.4f  "
+                    "epoch_time=%.2fs  samples/s=%.0f",
+                    epoch, self.cfg.epochs,
+                    train_loss, val_loss, val_accuracy,
+                    epoch_time, samples_per_second,
                 )
 
             if self.rank == 0 and self.logger:
                 self.logger.log_metric("train_loss", float(train_loss), step=epoch)
                 self.logger.log_metric("val_loss", float(val_loss), step=epoch)
                 self.logger.log_metric("val_accuracy", float(val_accuracy), step=epoch)
+                self.logger.log_metric("epoch_time_seconds", epoch_time, step=epoch)
+                self.logger.log_metric("samples_per_second", samples_per_second, step=epoch)
+
+        total_training_time = time.perf_counter() - t_run_start
+        if self.rank == 0:
+            log.info("training complete  total_time=%.2fs", total_training_time)
+            if self.logger:
+                self.logger.log_metric("total_training_time", total_training_time)
 
     @torch.no_grad()
     def evaluate(self) -> Tuple[float, float]:
         return self._eval_epoch()
 
-    def _train_epoch(self, epoch: int, global_step: int) -> Tuple[float, float, int]:
+    def _train_epoch(self, epoch: int, global_step: int) -> Tuple[float, float, int, int]:
         self.model.train()
         total_loss = 0.0
         correct = 0
@@ -111,7 +128,7 @@ class Trainer:
 
         avg_loss = total_loss / max(total, 1)
         acc = correct / max(total, 1)
-        return avg_loss, acc, global_step
+        return avg_loss, acc, global_step, total
 
     @torch.no_grad()
     def _eval_epoch(self) -> Tuple[float, float]:

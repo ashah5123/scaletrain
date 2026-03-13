@@ -263,3 +263,5 @@ docker run --rm \
 - **DDP is opt-in.** `distributed: false` (default) gives identical single-process behavior with zero overhead.
 - **Rank-0 gating.** In distributed mode, all MLflow calls, console output, and model logging are gated on `rank == 0` to prevent duplicate writes.
 - **Layer-cached Docker builds.** `pyproject.toml` is copied before source code, so the heavy dependency layer is only rebuilt when dependencies change.
+- **Structured logging.** Training emits JSON-structured logs (`timestamp`, `level`, `rank`, `message`) configured at startup. Non-zero DDP ranks are silenced at the logging level, not by scattering conditionals through the code.
+- **Performance instrumentation.** Each epoch records `epoch_time_seconds` and `samples_per_second`; `total_training_time` is logged at run end. All three are written to MLflow alongside the standard loss/accuracy metrics.
